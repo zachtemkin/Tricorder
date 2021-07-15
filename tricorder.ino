@@ -66,8 +66,10 @@ Adafruit_GPS GPS(&GPSSerial);
 
 uint32_t timer = millis();
 
-float gpsLatReading = 0;
-float gpsLonReading = 0;
+float gpsLatitudeReading = 0;
+char gpsLatCardinal;
+float gpsLongitudeReading = 0;
+char gpsLonCardinal;
 float gpsSpeedReading = 0;
 float gpsAngleReading = 0;
 float gpsAltReading = 0;
@@ -243,8 +245,10 @@ void saveDataOffline() {
     logEntryJson["temperature"] = temperatureReading;
     logEntryJson["humidity"] = humidityReading;
     logEntryJson["pressure"] = pressureReading;
-    logEntryJson["latitude"] = gpsLatReading;
-    logEntryJson["longitude"] = gpsLonReading;
+    logEntryJson["latitude"] = gpsLatitudeReading;
+    logEntryJson["lat"] = gpsLatCardinal;
+    logEntryJson["longitude"] = gpsLongitudeReading;
+    logEntryJson["lon"] = gpsLonCardinal;
     logEntryJson["speed"] = gpsSpeedReading;
     logEntryJson["angle"] = gpsAngleReading;
     logEntryJson["altitude"] = gpsAltReading;
@@ -353,11 +357,13 @@ void updateGPSreadings() {
       // Serial.print("Location: ");
       // Serial.print(GPS.latitude, 4);
       // Serial.print(GPS.lat);
-      gpsLatReading = GPS.latitude;
+      gpsLatitudeReading = (GPS.latitude, 4);
+      gpsLatCardinal = GPS.lat;
       // Serial.print(", ");
       // Serial.print(GPS.longitude, 4);
       // Serial.println(GPS.lon);
-      gpsLonReading = GPS.longitude;
+      gpsLongitudeReading = (GPS.longitude, 4);
+      gpsLonCardinal = GPS.lon;
       // Serial.print("Speed (knots): ");
       // Serial.println(GPS.speed);
       gpsSpeedReading = GPS.speed;
