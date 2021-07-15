@@ -20,36 +20,17 @@
 
 #define EEPROM_SIZE 1
 
-// Define the WiFi credentials
-// #define WIFI_SSID ""
+// WiFi Credentials
 #define WIFI_SSID "batcave"
-// #define WIFI_PASSWORD ""
 #define WIFI_PASSWORD "by-permit-only"
-bool wifiIsConnected = false;
 
-// Define Firebas credentials
+// Firebas credentials
 #define API_KEY "AIzaSyDXPfLlPvMkDf8hdbHE7qwnh_Uq6FcJMFo"
 #define DATABASE_URL "esp32-cb077-default-rtdb.firebaseio.com"
 
 // Firebase objects
 FirebaseData fbdo;
 FirebaseJson parentNode_json;
-FirebaseJson metaData_json;
-FirebaseJson logEntry_json;
-FirebaseJson tvoc_json;
-FirebaseJson eco2_json;
-FirebaseJson uv_json;
-FirebaseJson pressure_json;
-FirebaseJson temperature_json;
-FirebaseJson humidity_json;
-FirebaseJson gps_json;
-FirebaseJson gpsLat_json;
-FirebaseJson gpsLon_json;
-FirebaseJson gpsSpeed_json;
-FirebaseJson gpsAngle_json;
-FirebaseJson gpsAlt_json;
-FirebaseJson gpsSats_json;
-FirebaseJson gpsFix_json;
 FirebaseConfig config;
 FirebaseAuth auth;
 
@@ -65,32 +46,25 @@ String fuid = "";
 // NTP server to request epoch time
 const char *ntpServer = "pool.ntp.org";
 
-// Variable to save current epoch time
-unsigned long t;
-
 // Sensors
 Adafruit_SGP30 sgp;
 Adafruit_BME280 bme;
 Adafruit_VEML6070 uv = Adafruit_VEML6070();
 
-// sgp30 data
-float tvoc = 0;
-float eco2 = 0;
-
-// BME280 Data
+// Initialize sensor reading vars
+int tvoc = 0;
+int eco2 = 0;
 int humidityReading = 0;
 int temperatureReading = 0;
 int pressureReading = 0;
-
-// VEML6070 Data
 int uvReading = 0;
 
 //GPS
-// what's the name of the hardware serial port?
 #define GPSSerial Serial1
-
-// Connect to the GPS on the hardware port
+#define GPSECHO false
 Adafruit_GPS GPS(&GPSSerial);
+
+uint32_t timer = millis();
 
 float gpsLatReading = 0;
 float gpsLonReading = 0;
@@ -99,6 +73,14 @@ float gpsAngleReading = 0;
 float gpsAltReading = 0;
 int gpsSatsReading = 0;
 int gpsFixReading = 0;
+String gpsHour;
+String gpsMin;
+String gpsSec;
+String gpsTime;
+String gpsDay;
+String gpsMonth;
+String gpsYear;
+String gpsDate;
 
 // Stores the elapsed time from device start up
 unsigned long dataReadTimer = 0;
@@ -107,13 +89,13 @@ unsigned long wifiConnectTimer = 0;
 
 // The frequency of sensor updates to firebase, set to 10seconds
 unsigned long data_update_interval = 10000;
-unsigned long wifi_connect_interval = 60000;
+unsigned long wifi_connect_interval = 30000;
 unsigned long wifi_reConnect_interval = 120000;
 
 //upload state
 bool dataHasBeenUploaded = false;
 
-int count = 0;
+int fileCount = 0;
 
 void setup()
 {   
@@ -125,7 +107,7 @@ void setup()
     }
 
     EEPROM.begin(EEPROM_SIZE);
-    count = EEPROM.read(0);
+    fileCount = EEPROM.read(0);
 
     listDir(SPIFFS, "/", 1);
 
@@ -141,7 +123,6 @@ void setup()
     //get time
     configTime((-5 * 3600), 3600, ntpServer);
 
-
     // set up sensors
     setupBME280();
     setupSGP30();
@@ -150,40 +131,29 @@ void setup()
 
     if (WiFi.status() == WL_CONNECTED)
     {
-        //Initialise firebase configuration and signup anonymously
         firebaseInit();
-        setSensorMetaData();
         uploadSensorData();
     }
 }
 
 void loop() {
+    updateGPSreadings();
+    
     if (WiFi.status() == WL_CONNECTED)
     {
-        Serial.println("connected to wifi");
-        delay(10000);
-        
         if (!dataHasBeenUploaded) {
             firebaseInit();
             uploadSensorData();
             dataHasBeenUploaded = true;
         }
-
-        updateSesorReadings();
     } else {
-        delay(10000);
-        Serial.println("lost wifi");
-
         saveDataOffline();
         dataHasBeenUploaded = false;
 
         if (millis() - wifiCheckTimer > wifi_reConnect_interval) {
             wifiCheckTimer = millis();
-            Serial.println("time to try to connect");
 
-            if (wifiInit(WIFI_SSID, WIFI_PASSWORD)) {
-                wifiIsConnected = true;
-            }
+            wifiInit(WIFI_SSID, WIFI_PASSWORD);
         }
     }
 }
@@ -233,64 +203,46 @@ void firebaseInit() {
     Firebase.begin(&config, &auth);
 }
 
-String getFormattedTime()
+void setupSGP30()
 {
-    char formatted_time[32];
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo))
+    if (!sgp.begin())
     {
-        return "Failed to obtain time";
+        Serial.println("Could not find a valid SGP30 sensor, check wiring!");
     }
-    strftime(formatted_time, 32, "%A, %B %d %Y %H:%M:%S", &timeinfo);
-    return formatted_time;
 }
 
-void setSensorMetaData() {
-    //time
-    metaData_json.add("configTime", getFormattedTime());
-    //temp
-    metaData_json.add("temperatureDeviceId", "BME280");
-    metaData_json.add("tempUnits", "F");
-    //humidity
-    metaData_json.add("humidityDeviceId", "BME280");
-    metaData_json.add("humidityUnits", "%");
-    //pressure
-    metaData_json.add("pressureDeviceId", "BME280");
-    metaData_json.add("units", "hPa");
-    //air quality
-    metaData_json.add("airQualityDeviceId", "SGP30_01");
-    metaData_json.add("tvocUnits", "ppb");
-    metaData_json.add("eCO2Units", "ppm");
-    //uv
-    metaData_json.add("uvDeviceId", "VEML6070");
-    metaData_json.add("uvUnits", "uv index");
+void setupVEML6070()
+{
+    uv.begin(VEML6070_1_T);
+}
 
-    if (Firebase.setJSON(fbdo, databasePath + "/metaData", metaData_json))
+void setupBME280()
+{
+    bool status;
+    status = bme.begin();
+    if (!status)
     {
-        Serial.println("updated config json");
+        Serial.println("Could not find a valid BME280 sensor, check wiring!");
     }
-    else
-    {
-        Serial.println("FAILED");
-        Serial.println("REASON: " + fbdo.errorReason());
-        Serial.println("------------------------------------");
-        Serial.println();
-    }
-    return;
+}
+
+void setupGPS()
+{
+    GPS.begin(9600);
+    GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
+    GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ); // 1 Hz update rate
+    GPS.sendCommand(PGCMD_ANTENNA);
 }
 
 void saveDataOffline() {
     if (millis() - dataReadTimer > data_update_interval) {
         dataReadTimer = millis();
-        
-        updateSesorReadings();
-        Serial.println("saving data offline");
-        
-        String logEntryFilePath = "/logEntryFile_";
-        logEntryFilePath.concat(count);
+                
+        String logEntryFilePath = "/logEntryFile_";                                                                                         
+        logEntryFilePath.concat(fileCount);
         logEntryFilePath.concat(".txt");
-        count ++;
-        EEPROM.write(0, count);
+        fileCount ++;
+        EEPROM.write(0, fileCount);
         EEPROM.commit();
         File LogEntryFile = SPIFFS.open(logEntryFilePath, FILE_WRITE);
 
@@ -308,6 +260,8 @@ void saveDataOffline() {
         logEntryJson["angle"] = gpsAngleReading;
         logEntryJson["altitude"] = gpsAltReading;
         logEntryJson["satelites"] = gpsSatsReading;
+        logEntryJson["gpsTime"] = gpsTime;
+        logEntryJson["gpsDate"] = gpsDate;
         
         serializeJson(logEntryJson, LogEntryFile);
         LogEntryFile.close();
@@ -350,36 +304,6 @@ void uploadSensorData() {
     }
 }
 
-void setupSGP30() {
-    if (!sgp.begin())
-    {
-        Serial.println("Could not find a valid SGP30 sensor, check wiring!");
-        while (1);
-    }
-}
-
-void setupVEML6070() {
-    uv.begin(VEML6070_1_T);
-}
-
-void setupBME280()
-{
-    bool status;
-    status = bme.begin();
-    if (!status)
-    {
-        Serial.println("Could not find a valid BME280 sensor, check wiring!");
-        while (1);
-    }
-}
-
-void setupGPS() {
-    GPS.begin(9600);
-    GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
-    GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ); // 1 Hz update rate
-    GPS.sendCommand(PGCMD_ANTENNA);
-}
-
 void updateSesorReadings() {
     tvoc = sgp.TVOC;
     eco2 = sgp.eCO2;
@@ -387,115 +311,79 @@ void updateSesorReadings() {
     temperatureReading = bme.readTemperature() * 1.8 + 32;
     humidityReading = bme.readHumidity();
     pressureReading = bme.readPressure() / 100.0F;
+}
 
-    delay(10000);
-    Serial.println("----------------------------------------");
-    Serial.println("updating sensor readings");
-    Serial.println("");
-    Serial.print("tvoc: "); Serial.println(tvoc);
-    Serial.print("eco2: "); Serial.println(eco2);
-    Serial.print("uv: "); Serial.println(uvReading);
-    Serial.print("temp: "); Serial.println(temperatureReading);
-    Serial.print("humidity: "); Serial.println(humidityReading);
-    Serial.print("pressure: "); Serial.println(pressureReading);
-    Serial.println("----------------------------------------");
-    Serial.println("");
+void updateGPSreadings() {
+    char c = GPS.read();
+    if (GPSECHO) {
+        if (c) {
+            Serial.print(c);
+        }
+    }
 
-    //Read GPS
-    // if (GPS.newNMEAreceived())
-    // {
-    //     // a tricky thing here is if we print the NMEA sentence, or data
-    //     // we end up not listening and catching other sentences!
-    //     // so be very wary if using OUTPUT_ALLDATA and trying to print out data
-    //     // Serial.print(GPS.lastNMEA()); // this also sets the newNMEAreceived() flag to false
-    //     if (!GPS.parse(GPS.lastNMEA())) // this also sets the newNMEAreceived() flag to false
-    //         return;                     // we can fail to parse a sentence in which case we should just wait for another
-    // }
-    /*
-    Serial.print("\nTime: ");
-    if (GPS.hour < 10)
+    if (GPS.newNMEAreceived())
     {
-        Serial.print('0');
+        if (!GPS.parse(GPS.lastNMEA())) // this also sets the newNMEAreceived() flag to false
+            return;                     // we can fail to parse a sentence in which case we should just wait for another
     }
-    Serial.print(GPS.hour, DEC);
-    Serial.print(':');
-    if (GPS.minute < 10)
+
+    if (millis() - timer > 2000)
     {
-        Serial.print('0');
-    }
-    Serial.print(GPS.minute, DEC);
-    Serial.print(':');
-    if (GPS.seconds < 10)
-    {
-        Serial.print('0');
-    }
-    Serial.print(GPS.seconds, DEC);
-    Serial.print('.');
-    if (GPS.milliseconds < 10)
-    {
-        Serial.print("00");
-    }
-    else if (GPS.milliseconds > 9 && GPS.milliseconds < 100)
-    {
-        Serial.print("0");
-    }
-    Serial.println(GPS.milliseconds);
-    Serial.print("Date: ");
-    Serial.print(GPS.month, DEC);
-    Serial.print("/");
-    Serial.print(GPS.day, DEC);
-    Serial.print("/20");
-    Serial.println(GPS.year, DEC);
-    Serial.print("Fix: ");
-    Serial.print((int)GPS.fix);
-    */
-    // gpsFixReading = (int)GPS.fix;
-    // Serial.print(" quality: ");
-    // Serial.println((int)GPS.fixquality);
-    /*
-    if (GPS.fix)
-    {
-        Serial.print("Location: ");
-        Serial.print(GPS.latitude, 4);
-        Serial.print(GPS.lat);
-        gpsLatReading = GPS.lat;
+        timer = millis(); // reset the timer
+
+        if (GPS.hour < 10) {
+            gpsHour = '0' + String(GPS.hour);
+        } else {
+            gpsHour = String(GPS.hour);
+        }
         
-        Serial.print(", ");
-        Serial.print(GPS.longitude, 4);
-        Serial.println(GPS.lon);
-        gpsLonReading = GPS.lon;
-        
-        // Serial.print("Speed (knots): ");
-        // Serial.println(GPS.speed);
-        gpsSpeedReading = GPS.speed;
-        
-        // Serial.print("Angle: ");
-        // Serial.println(GPS.angle);
-        gpsAngleReading = GPS.angle;
+        if (GPS.minute < 10) {
+            gpsMin = '0' + String(GPS.minute);
+        } else {
+            gpsMin = String(GPS.minute);
+        }
 
-        // Serial.print("Altitude: ");
-        // Serial.println(GPS.altitude);
-        gpsAltReading = GPS.altitude;
+        if (GPS.seconds < 10) {
+            gpsSec = '0' + String(GPS.seconds);
+        } else {
+            gpsSec = String(GPS.seconds);
+        }
 
-        Serial.print("Satellites: ");
-        Serial.println((int)GPS.satellites);
-        gpsSatsReading = (int)GPS.satellites;
+        gpsTime = gpsHour + ':' + gpsMin + ':' + gpsSec;
+
+        gpsDay = String(GPS.day);
+        gpsMonth = String(GPS.month);
+        gpsYear = '20' + String(GPS.year);
+        gpsDate = gpsMonth + '/' + gpsDay + '/' + gpsYear;
+
+        // Serial.print("fix: "); Serial.print((int)GPS.fix);
+        // Serial.print("\t fix quality: "); Serial.println((int)GPS.fixquality);
+        // Serial.print("Satellites: ");
+        // Serial.println((int)GPS.satellites);
+        
+        if (GPS.fix)
+        {
+            // Serial.print("Location: ");
+            // Serial.print(GPS.latitude, 4);
+            // Serial.print(GPS.lat);
+            gpsLatReading = GPS.latitude;
+            // Serial.print(", ");
+            // Serial.print(GPS.longitude, 4);
+            // Serial.println(GPS.lon);
+            gpsLonReading = GPS.longitude;
+            // Serial.print("Speed (knots): ");
+            // Serial.println(GPS.speed);
+            gpsSpeedReading = GPS.speed;
+            // Serial.print("Angle: ");
+            // Serial.println(GPS.angle);
+            gpsAngleReading = GPS.angle;
+            // Serial.print("Altitude: ");
+            // Serial.println(GPS.altitude);
+            gpsAltReading = GPS.altitude;
+            gpsSatsReading = (int)GPS.satellites;
+        }
+        updateSesorReadings();
     }
-    */
-
-    // logEntry_json.add("dateTime", getFormattedTime());
-    // logEntry_json.add("tvoc", tvoc);
-    // logEntry_json.add("eco2", eco2);
-    // logEntry_json.add("uv", uvReading);
-    // logEntry_json.add("temperature", temperatureReading);
-    // logEntry_json.add("humidity", humidityReading);
-    // logEntry_json.add("pressure", pressureReading);
-    // logEntry_json.add("lat", gpsLatReading);
-    // logEntry_json.add("lon", gpsLonReading);
-    // logEntry_json.add("speed", gpsSpeedReading);
-    // logEntry_json.add("angle", gpsAngleReading);
-    // logEntry_json.add("altitude", gpsAltReading);
-    // logEntry_json.add("satelites", gpsSatsReading);
 }
 
 void listDir(fs::FS &fs, const char *dirname, uint8_t levels)
