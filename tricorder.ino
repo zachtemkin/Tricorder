@@ -20,8 +20,10 @@
 
 #define EEPROM_SIZE 1
 
-// Define the WiFi credentials 
+// Define the WiFi credentials
+// #define WIFI_SSID ""
 #define WIFI_SSID "batcave"
+// #define WIFI_PASSWORD ""
 #define WIFI_PASSWORD "by-permit-only"
 bool wifiIsConnected = false;
 
@@ -99,10 +101,17 @@ int gpsSatsReading = 0;
 int gpsFixReading = 0;
 
 // Stores the elapsed time from device start up
-unsigned long elapsedMillis = 0;
+unsigned long dataReadTimer = 0;
+unsigned long wifiCheckTimer = 0;
+unsigned long wifiConnectTimer = 0;
 
 // The frequency of sensor updates to firebase, set to 10seconds
-unsigned long update_interval = 10000;
+unsigned long data_update_interval = 10000;
+unsigned long wifi_connect_interval = 60000;
+unsigned long wifi_reConnect_interval = 120000;
+
+//upload state
+bool dataHasBeenUploaded = false;
 
 int count = 0;
 
@@ -122,10 +131,8 @@ void setup()
 
     //connect to WiFi
     if (!wifiInit(WIFI_SSID, WIFI_PASSWORD)) {
-        Serial.println("can't connect to WiFi. Saving offline");
-    } else {
-        wifiIsConnected = true;
-    }
+        Serial.println("Saving offline");
+    } 
 
     //WiFi Manager
     // WiFiManager wifiManager;
@@ -134,10 +141,6 @@ void setup()
     //get time
     configTime((-5 * 3600), 3600, ntpServer);
 
-    //Initialise firebase configuration and signup anonymously
-    firebaseInit();
-    setSensorMetaData();
-    // uploadSensorData();
 
     // set up sensors
     setupBME280();
@@ -145,25 +148,62 @@ void setup()
     setupVEML6070();
     setupGPS();
 
-    if (wifiIsConnected) {
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        //Initialise firebase configuration and signup anonymously
+        firebaseInit();
+        setSensorMetaData();
         uploadSensorData();
     }
 }
 
 void loop() {
-    if(!wifiIsConnected) {
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        Serial.println("connected to wifi");
+        delay(10000);
+        
+        if (!dataHasBeenUploaded) {
+            firebaseInit();
+            uploadSensorData();
+            dataHasBeenUploaded = true;
+        }
+
+        updateSesorReadings();
+    } else {
+        delay(10000);
+        Serial.println("lost wifi");
+
         saveDataOffline();
+        dataHasBeenUploaded = false;
+
+        if (millis() - wifiCheckTimer > wifi_reConnect_interval) {
+            wifiCheckTimer = millis();
+            Serial.println("time to try to connect");
+
+            if (wifiInit(WIFI_SSID, WIFI_PASSWORD)) {
+                wifiIsConnected = true;
+            }
+        }
     }
 }
 
 bool wifiInit(const char * ssid, const char * password) {
     WiFi.begin(ssid, password);
     Serial.print("connecting to wifi");
+
     while (WiFi.status() != WL_CONNECTED)
     {
         Serial.print(".");
         delay(300);
+
+        if (millis() - wifiConnectTimer > wifi_connect_interval) {
+            wifiConnectTimer = millis();
+            Serial.println("could not connect to wifi");
+            return false;
+        }
     }
+
     Serial.println();
     Serial.print("Connected with IP: ");
     Serial.println(WiFi.localIP());
@@ -240,11 +280,11 @@ void setSensorMetaData() {
 }
 
 void saveDataOffline() {
-    if (millis() - elapsedMillis > update_interval) {
-        elapsedMillis = millis();
+    if (millis() - dataReadTimer > data_update_interval) {
+        dataReadTimer = millis();
         
-        Serial.println("saving data offline");
         updateSesorReadings();
+        Serial.println("saving data offline");
         
         String logEntryFilePath = "/logEntryFile_";
         logEntryFilePath.concat(count);
@@ -287,12 +327,6 @@ void uploadSensorData() {
             String logEntryString;
             deserializeJson(logEntryFile, file);
             serializeJson(logEntryFile, logEntryString);
-            
-            // Serial.println("**************************");
-            // Serial.println("");
-            // Serial.println(logEntryString);
-            // Serial.println("");
-            // Serial.println("**************************");
 
             parentNode_json.setJsonData(logEntryString);
 
@@ -309,6 +343,9 @@ void uploadSensorData() {
                 Serial.println();
             }
             file = root.openNextFile();
+
+            EEPROM.write(0, 0);
+            EEPROM.commit();
         }
     }
 }
@@ -350,17 +387,30 @@ void updateSesorReadings() {
     temperatureReading = bme.readTemperature() * 1.8 + 32;
     humidityReading = bme.readHumidity();
     pressureReading = bme.readPressure() / 100.0F;
-    
+
+    delay(10000);
+    Serial.println("----------------------------------------");
+    Serial.println("updating sensor readings");
+    Serial.println("");
+    Serial.print("tvoc: "); Serial.println(tvoc);
+    Serial.print("eco2: "); Serial.println(eco2);
+    Serial.print("uv: "); Serial.println(uvReading);
+    Serial.print("temp: "); Serial.println(temperatureReading);
+    Serial.print("humidity: "); Serial.println(humidityReading);
+    Serial.print("pressure: "); Serial.println(pressureReading);
+    Serial.println("----------------------------------------");
+    Serial.println("");
+
     //Read GPS
-    if (GPS.newNMEAreceived())
-    {
-        // a tricky thing here is if we print the NMEA sentence, or data
-        // we end up not listening and catching other sentences!
-        // so be very wary if using OUTPUT_ALLDATA and trying to print out data
-        // Serial.print(GPS.lastNMEA()); // this also sets the newNMEAreceived() flag to false
-        if (!GPS.parse(GPS.lastNMEA())) // this also sets the newNMEAreceived() flag to false
-            return;                     // we can fail to parse a sentence in which case we should just wait for another
-    }
+    // if (GPS.newNMEAreceived())
+    // {
+    //     // a tricky thing here is if we print the NMEA sentence, or data
+    //     // we end up not listening and catching other sentences!
+    //     // so be very wary if using OUTPUT_ALLDATA and trying to print out data
+    //     // Serial.print(GPS.lastNMEA()); // this also sets the newNMEAreceived() flag to false
+    //     if (!GPS.parse(GPS.lastNMEA())) // this also sets the newNMEAreceived() flag to false
+    //         return;                     // we can fail to parse a sentence in which case we should just wait for another
+    // }
     /*
     Serial.print("\nTime: ");
     if (GPS.hour < 10)
@@ -399,20 +449,20 @@ void updateSesorReadings() {
     Serial.print("Fix: ");
     Serial.print((int)GPS.fix);
     */
-    gpsFixReading = (int)GPS.fix;
+    // gpsFixReading = (int)GPS.fix;
     // Serial.print(" quality: ");
     // Serial.println((int)GPS.fixquality);
-    
+    /*
     if (GPS.fix)
     {
-        // Serial.print("Location: ");
-        // Serial.print(GPS.latitude, 4);
-        // Serial.print(GPS.lat);
+        Serial.print("Location: ");
+        Serial.print(GPS.latitude, 4);
+        Serial.print(GPS.lat);
         gpsLatReading = GPS.lat;
         
-        // Serial.print(", ");
-        // Serial.print(GPS.longitude, 4);
-        // Serial.println(GPS.lon);
+        Serial.print(", ");
+        Serial.print(GPS.longitude, 4);
+        Serial.println(GPS.lon);
         gpsLonReading = GPS.lon;
         
         // Serial.print("Speed (knots): ");
@@ -427,11 +477,11 @@ void updateSesorReadings() {
         // Serial.println(GPS.altitude);
         gpsAltReading = GPS.altitude;
 
-        // Serial.print("Satellites: ");
-        // Serial.println((int)GPS.satellites);
+        Serial.print("Satellites: ");
+        Serial.println((int)GPS.satellites);
         gpsSatsReading = (int)GPS.satellites;
     }
-
+    */
 
     // logEntry_json.add("dateTime", getFormattedTime());
     // logEntry_json.add("tvoc", tvoc);
